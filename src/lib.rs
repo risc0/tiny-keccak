@@ -38,7 +38,7 @@
 //! [`@oleganza`]: https://github.com/oleganza
 //! [`CC0`]: https://github.com/debris/tiny-keccak/blob/master/LICENSE
 
-#![no_std]
+//#![no_std]
 #![deny(missing_docs)]
 
 const RHO: [u32; 24] = [
@@ -164,6 +164,8 @@ pub use keccak::Keccak;
 #[cfg(feature = "shake")]
 mod shake;
 
+use risc0_zkvm_platform::syscall::{sys_keccak_absorb, sys_keccak_squeeze, DIGEST_WORDS};
+use risc0_zkvm::guest::env;
 #[cfg(feature = "shake")]
 pub use shake::Shake;
 
@@ -371,6 +373,7 @@ struct KeccakState<P> {
     rate: usize,
     delim: u8,
     mode: Mode,
+    fd: u32,
     permutation: core::marker::PhantomData<P>,
 }
 
@@ -382,20 +385,32 @@ impl<P> Clone for KeccakState<P> {
             rate: self.rate,
             delim: self.delim,
             mode: self.mode,
+            fd: self.fd,
             permutation: core::marker::PhantomData,
         }
+    }
+}
+
+impl<P> Drop for KeccakState<P> {
+    fn drop(&mut self) {
+        let status = unsafe { risc0_zkvm_platform::syscall::sys_keccak_close(self.fd)};
+        assert!(status == 0);
     }
 }
 
 impl<P: Permutation> KeccakState<P> {
     fn new(rate: usize, delim: u8) -> Self {
         assert!(rate != 0, "rate cannot be equal 0");
+        let mut fd: u32 = 0;
+        let status = unsafe { risc0_zkvm_platform::syscall::sys_keccak_open(&mut fd as *mut u32)};
+        assert!(status == 0);
         KeccakState {
             buffer: Buffer::default(),
             offset: 0,
             rate,
             delim,
             mode: Mode::Absorbing,
+            fd,
             permutation: core::marker::PhantomData,
         }
     }
@@ -405,27 +420,10 @@ impl<P: Permutation> KeccakState<P> {
     }
 
     fn update(&mut self, input: &[u8]) {
-        if let Mode::Squeezing = self.mode {
-            self.mode = Mode::Absorbing;
-            self.fill_block();
-        }
-
-        //first foldp
-        let mut ip = 0;
-        let mut l = input.len();
-        let mut rate = self.rate - self.offset;
-        let mut offset = self.offset;
-        while l >= rate {
-            self.buffer.xorin(&input[ip..], offset, rate);
-            self.keccak();
-            ip += rate;
-            l -= rate;
-            rate = self.rate;
-            offset = 0;
-        }
-
-        self.buffer.xorin(&input[ip..], offset, l);
-        self.offset = offset + l;
+        unsafe {
+            env::KECCAK_BATCHER.write_data(input).unwrap();
+            sys_keccak_absorb(self.fd, input.as_ptr() as *const u8, input.len())
+        };
     }
 
     fn pad(&mut self) {
@@ -433,28 +431,11 @@ impl<P: Permutation> KeccakState<P> {
     }
 
     fn squeeze(&mut self, output: &mut [u8]) {
-        if let Mode::Absorbing = self.mode {
-            self.mode = Mode::Squeezing;
-            self.pad();
-            self.fill_block();
+        unsafe {
+            sys_keccak_squeeze(self.fd, output.as_ptr() as *mut [u32; DIGEST_WORDS]);
+            env::KECCAK_BATCHER.write_padding().unwrap();
+            env::KECCAK_BATCHER.write_hash(&output).unwrap();
         }
-
-        // second foldp
-        let mut op = 0;
-        let mut l = output.len();
-        let mut rate = self.rate - self.offset;
-        let mut offset = self.offset;
-        while l >= rate {
-            self.buffer.setout(&mut output[op..], offset, rate);
-            self.keccak();
-            op += rate;
-            l -= rate;
-            rate = self.rate;
-            offset = 0;
-        }
-
-        self.buffer.setout(&mut output[op..], offset, l);
-        self.offset = offset + l;
     }
 
     fn finalize(mut self, output: &mut [u8]) {
