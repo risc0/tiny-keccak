@@ -1,26 +1,6 @@
 //! The `Keccak` hash functions.
 
 use super::{bits_to_rate, keccakf::KeccakF, Hasher, KeccakState};
-#[cfg(target_os = "zkvm")]
-extern crate alloc;
-#[cfg(target_os = "zkvm")]
-use alloc::{vec, vec::Vec};
-#[cfg(target_os = "zkvm")]
-use anyhow::Result;
-
-#[cfg(target_os = "zkvm")]
-extern "Rust" {
-    fn keccak_digest(input: &[u8], delim: u8) -> Result<[u8; 32]>;
-}
-
-// the input transcript must have 8 bytes for block count, 32 bytes for the
-// hash, and 8 bytes of 0's at the very end.
-#[cfg(target_os = "zkvm")]
-const TRANSCRIPT_MINIMUM: usize = 8 + 32 + 8;
-#[cfg(target_os = "zkvm")]
-const KECCAK_TRANSCRIPT_LIMIT: usize = 100_000;
-#[cfg(target_os = "zkvm")]
-const KECCAK_INPUT_LIMIT: usize = KECCAK_TRANSCRIPT_LIMIT - TRANSCRIPT_MINIMUM;
 
 /// The `Keccak` hash functions defined in [`Keccak SHA3 submission`].
 ///
@@ -35,10 +15,6 @@ const KECCAK_INPUT_LIMIT: usize = KECCAK_TRANSCRIPT_LIMIT - TRANSCRIPT_MINIMUM;
 #[derive(Clone)]
 pub struct Keccak {
     state: KeccakState<KeccakF>,
-    #[cfg(target_os = "zkvm")]
-    raw_data: Vec<u8>,
-    #[cfg(target_os = "zkvm")]
-    slow_path: bool,
 }
 
 impl Keccak {
@@ -75,10 +51,6 @@ impl Keccak {
     fn new(bits: usize) -> Keccak {
         Keccak {
             state: KeccakState::new(bits_to_rate(bits), Self::DELIM),
-            #[cfg(target_os = "zkvm")]
-            raw_data: vec![],
-            #[cfg(target_os = "zkvm")]
-            slow_path: false,
         }
     }
 }
@@ -97,25 +69,8 @@ impl Hasher for Keccak {
     /// keccak.update(b" world");
     /// # }
     /// ```
-    #[cfg(not(target_os = "zkvm"))]
     fn update(&mut self, input: &[u8]) {
         self.state.update(input);
-    }
-
-    #[cfg(target_os = "zkvm")]
-    fn update(&mut self, input: &[u8]) {
-        if !self.slow_path {
-            if self.raw_data.len() + input.len() > KECCAK_INPUT_LIMIT {
-                self.slow_path = true;
-                self.state.update(&self.raw_data);
-            } else {
-                self.raw_data.extend_from_slice(input);
-            }
-        }
-
-        if self.slow_path {
-            self.state.update(input);
-        }
     }
 
     /// Pad and squeeze the state to the output.
@@ -132,21 +87,7 @@ impl Hasher for Keccak {
     /// # }
     /// #
     /// ```
-    #[cfg(not(target_os = "zkvm"))]
     fn finalize(self, output: &mut [u8]) {
         self.state.finalize(output);
-    }
-
-    #[cfg(target_os = "zkvm")]
-    fn finalize(self, output: &mut [u8]) {
-        if self.slow_path {
-            self.state.finalize(output);
-        } else {
-            output.clone_from_slice(&unsafe {
-                keccak_digest(&self.raw_data, Self::DELIM)
-                    .unwrap()
-                    .as_mut_slice()
-            });
-        }
     }
 }
