@@ -36,7 +36,7 @@ pub struct KeccakF;
 impl Permutation for KeccakF {
     #[cfg(target_os = "zkvm")]
     fn execute(buffer: &mut Buffer) {
-        buffer.0 = risc0_zkvm::guest::env::keccak_update(buffer.words());
+        risc0_zkvm::guest::env::keccak_update(buffer.words());
     }
     #[cfg(not(target_os = "zkvm"))]
     fn execute(buffer: &mut Buffer) {
