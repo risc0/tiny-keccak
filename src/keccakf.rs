@@ -29,6 +29,11 @@ const RC: [u64; ROUNDS] = [
     0x8000000080008008u64,
 ];
 
+#[cfg(target_os = "zkvm")]
+extern "Rust" {
+    fn risc0_keccak_update(state: &mut [u64; 25]);
+}
+
 keccak_function!("`keccak-f[1600, 24]`", keccakf, ROUNDS, RC);
 
 pub struct KeccakF;
@@ -36,7 +41,7 @@ pub struct KeccakF;
 impl Permutation for KeccakF {
     #[cfg(target_os = "zkvm")]
     fn execute(buffer: &mut Buffer) {
-        risc0_zkvm::guest::env::keccak_update(buffer.words());
+        unsafe { risc0_keccak_update(buffer.words()) };
     }
     #[cfg(not(target_os = "zkvm"))]
     fn execute(buffer: &mut Buffer) {
